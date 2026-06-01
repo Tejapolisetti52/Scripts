@@ -1,66 +1,115 @@
 stages:
   - build
-  - docker-build
-  - docker-push
+  - push
   - deploy
 
 variables:
   IMAGE_NAME: $CI_REGISTRY_IMAGE
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+.before_script_template: &docker_login
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
 build:
   stage: build
-  image: maven:3.9.6-eclipse-temurin-17
+  image: node:20
   script:
-    - echo "Building Java application..."
-    - mvn clean package -DskipTests
+    - echo "Detecting project type..."
+
+    # JAVA
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[java\]"; then
+        echo "Building Java"
+        apt-get update && apt-get install -y maven
+        mvn clean install -DskipTests
+      fi
+
+    # PYTHON
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[python\]"; then
+        echo "Python build (no compile step)"
+      fi
+
+    # REACT
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[react\]"; then
+        echo "Building React"
+        npm install
+        npm run build
+      fi
+
   artifacts:
     paths:
-      - target/*.jar
-    expire_in: 1 week
-
-
-docker-build:
-  stage: docker-build
+      - target/
+      - build/
+      - dist/
+    expire_in: 1 hour
+push:
+  stage: push
   image: docker:24
   services:
     - docker:24-dind
-  dependencies:
-    - build
-  script:
-    - echo "Building Docker image..."
-    - docker build -t $IMAGE_NAME:$IMAGE_TAG .
+  <<: *docker_login
 
-docker-push:
-  stage: docker-push
-  image: docker:24
-  services:
-    - docker:24-dind
-  dependencies:
-    - docker-build
   script:
-    - echo "Logging into GitLab Container Registry..."
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+    # JAVA IMAGE
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[java\]"; then
+        docker build -t $IMAGE_NAME:java-$IMAGE_TAG -f Dockerfile.java .
+        docker push $IMAGE_NAME:java-$IMAGE_TAG
+      fi
 
-    - echo "Pushing Docker image..."
-    - docker push $IMAGE_NAME:$IMAGE_TAG
-    - docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
-    - docker push $IMAGE_NAME:latest
-  only:
-    - main
+    # PYTHON IMAGE
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[python\]"; then
+        docker build -t $IMAGE_NAME:python-$IMAGE_TAG -f Dockerfile.python .
+        docker push $IMAGE_NAME:python-$IMAGE_TAG
+      fi
+
+    # REACT IMAGE
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[react\]"; then
+        docker build -t $IMAGE_NAME:react-$IMAGE_TAG -f Dockerfile.react .
+        docker push $IMAGE_NAME:react-$IMAGE_TAG
+      fi
 deploy:
   stage: deploy
   image: alpine:latest
+
   before_script:
     - apk add --no-cache openssh
-  script:
-    - echo "Deploying Docker container on remote server..."
 
-    - ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
-        docker login $CI_REGISTRY -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD &&
-        docker pull $IMAGE_NAME:$IMAGE_TAG &&
-        docker stop my-app || true &&
-        docker rm my-app || true &&
-        docker run -d --name my-app -p 8080:8080 $IMAGE_NAME:$IMAGE_TAG
-      "
-  only:
-    - main
+  script:
+    - echo "Deploying application..."
+
+    # JAVA DEPLOY
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[java\]"; then
+        ssh $SSH_USER@$SSH_HOST "
+          docker pull $IMAGE_NAME:java-$IMAGE_TAG &&
+          docker stop java-app || true &&
+          docker rm java-app || true &&
+          docker run -d --name java-app -p 8080:8080 $IMAGE_NAME:java-$IMAGE_TAG
+        "
+      fi
+
+    # PYTHON DEPLOY
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[python\]"; then
+        ssh $SSH_USER@$SSH_HOST "
+          docker pull $IMAGE_NAME:python-$IMAGE_TAG &&
+          docker stop python-app || true &&
+          docker rm python-app || true &&
+          docker run -d --name python-app -p 8000:8000 $IMAGE_NAME:python-$IMAGE_TAG
+        "
+      fi
+
+    # REACT DEPLOY
+    - |
+      if echo "$CI_COMMIT_MESSAGE" | grep -qi "\[react\]"; then
+        ssh $SSH_USER@$SSH_HOST "
+          docker pull $IMAGE_NAME:react-$IMAGE_TAG &&
+          docker stop react-app || true &&
+          docker rm react-app || true &&
+          docker run -d --name react-app -p 80:80 $IMAGE_NAME:react-$IMAGE_TAG
+        "
+      fi
