@@ -1,0 +1,29 @@
+- name: Server Health Monitoring
+  hosts: servers
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Get system uptime
+      command: uptime -p
+      register: uptime_output
+    - name: Check memory usage
+      shell: free -m
+      register: memory_output
+    - name: Check disk usage
+      command: df -h
+      register: disk_output
+    - name: Check CPU load
+      shell: cat /proc/loadavg
+      register: cpu_load
+    - name: Display system health report
+      debug:
+        msg:
+          - "=============================="
+          - "Server: {{ inventory_hostname }}"
+          - "Uptime: {{ uptime_output.stdout }}"
+          - "CPU Load: {{ cpu_load.stdout }}"
+          - "Memory Info:"
+          - "{{ memory_output.stdout_lines }}"
+          - "Disk Usage:"
+          - "{{ disk_output.stdout_lines }}"
+          - "=============================="
